@@ -1,0 +1,11 @@
+{
+  "name": "KSCP — KANOKSUWUN CHECK POINT",
+  "description": "เว็บแอปรายงานตัวและบันทึกเวลาพนักงานรักษาความปลอดภัย บริษัท กนกสุวรรณ บันทึกเวลาประเทศไทยและ UTC ถ่ายรูป ตรวจสอบสถานที่จริง และส่งออก CSV / Google Sheets",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

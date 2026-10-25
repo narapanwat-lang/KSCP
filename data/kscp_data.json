@@ -1,0 +1,95 @@
+{
+  "employees": [
+    {
+      "id": "emp_01",
+      "full_name": "สมชาย บุญมี",
+      "normalized_name": "สมชาย บุญมี",
+      "active": true,
+      "created_at": "2026-10-23T08:28:41.231Z",
+      "updated_at": "2026-10-23T08:28:41.231Z"
+    },
+    {
+      "id": "emp_02",
+      "full_name": "วิชัย ใจดี",
+      "normalized_name": "วิชัย ใจดี",
+      "active": true,
+      "created_at": "2026-10-23T08:28:41.231Z",
+      "updated_at": "2026-10-23T08:28:41.231Z"
+    },
+    {
+      "id": "emp_03",
+      "full_name": "ประสิทธิ์ รัตนกิจ",
+      "normalized_name": "ประสิทธิ์ รัตนกิจ",
+      "active": true,
+      "created_at": "2026-10-23T08:28:41.231Z",
+      "updated_at": "2026-10-23T08:28:41.231Z"
+    },
+    {
+      "id": "emp_04",
+      "full_name": "อนุชา มั่งคั่ง",
+      "normalized_name": "อนุชา มั่งคั่ง",
+      "active": true,
+      "created_at": "2026-10-23T08:28:41.231Z",
+      "updated_at": "2026-10-23T08:28:41.231Z"
+    }
+  ],
+  "reports": [
+    {
+      "id": "rep_1792744164688_873083",
+      "employee_id": "emp_01",
+      "employee_name_snapshot": "สมชาย บุญมี",
+      "report_date_th": "23/10/2026",
+      "report_time_th": "15:29:24",
+      "timezone": "Asia/Bangkok",
+      "report_timestamp_iso": "2026-10-23T15:29:24+07:00",
+      "report_timestamp_utc": "2026-10-23T08:29:24.688Z",
+      "server_received_at": "2026-10-23T08:29:24.688Z",
+      "situation": "normal",
+      "photo_url": "/api/photos/photo_rep_1792744164688_873083.jpg",
+      "photo_id": "photo_rep_1792744164688_873083.jpg",
+      "latitude": null,
+      "longitude": null,
+      "gps_accuracy_m": null,
+      "checkpoint_id": null,
+      "checkpoint_name": null,
+      "gps_verification_status": "gps_disabled",
+      "record_status": "active",
+      "created_at": "2026-10-23T08:29:24.688Z"
+    }
+  ],
+  "checkpoints": [
+    {
+      "id": "chk_01",
+      "name": "จุดตรวจหน้าป้อมประตูใหญ่ 1",
+      "latitude": 13.7563,
+      "longitude": 100.5018,
+      "allowed_radius_m": 100,
+      "active": true
+    },
+    {
+      "id": "chk_02",
+      "name": "จุดตรวจอาคาร A ประตูทางเข้า",
+      "latitude": 13.7568,
+      "longitude": 100.5022,
+      "allowed_radius_m": 80,
+      "active": true
+    },
+    {
+      "id": "chk_03",
+      "name": "จุดตรวจลานจอดรถหลังอาคาร",
+      "latitude": 13.7559,
+      "longitude": 100.5012,
+      "allowed_radius_m": 120,
+      "active": true
+    }
+  ],
+  "sync_logs": [],
+  "settings": {
+    "admin_passcode": "1304",
+    "gps_required": false,
+    "company_name": "บริษัท รักษาความปลอดภัย กนกสุวรรณ และ การจัดการความสะดวก จำกัด",
+    "google_sheets_url": "",
+    "auto_sync_sheets": false,
+    "last_sync_time": null
+  }
+}
