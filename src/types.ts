@@ -82,3 +82,22 @@ export interface SystemSettings {
   auto_sync_sheets: boolean;
   last_sync_time: string | null;
 }
+
+export interface PhotoArchiveReport extends Report {
+  age_days: number;
+  remaining_days: number;
+  is_expired: boolean;
+  expires_at: string;
+}
+
+export interface PhotoArchiveStats {
+  total: number;
+  valid_30_days: number;
+  expiring_soon: number;
+  expired: number;
+  drive_synced: number;
+  total_files: number;
+  total_bytes: number;
+  total_mb: string;
+}
+

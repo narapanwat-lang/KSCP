@@ -622,6 +622,90 @@ app.get('/api/admin/export/csv', verifyAdmin, (req: Request, res: Response) => {
   res.status(200).send(csvContent);
 });
 
+// Admin Photo Archive & 30-Day Retention Folder
+app.get('/api/admin/photo-archive', verifyAdmin, (req: Request, res: Response) => {
+  const db = getDb();
+  const now = Date.now();
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+  const photoReports = db.reports
+    .filter((r) => r.photo_url || r.photo_id)
+    .map((r) => {
+      const createdTime = new Date(r.created_at || r.report_timestamp_utc || r.server_received_at).getTime();
+      const ageMs = Math.max(0, now - createdTime);
+      const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+      const remainingMs = THIRTY_DAYS_MS - ageMs;
+      const remainingDays = Math.max(0, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+      const isExpired = ageMs > THIRTY_DAYS_MS;
+
+      return {
+        ...r,
+        age_days: ageDays,
+        remaining_days: remainingDays,
+        is_expired: isExpired,
+        expires_at: new Date(createdTime + THIRTY_DAYS_MS).toISOString(),
+      };
+    })
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+  // Statistics
+  const valid30Days = photoReports.filter((p) => !p.is_expired);
+  const expiringSoon = photoReports.filter((p) => !p.is_expired && p.remaining_days <= 5);
+  const driveSynced = photoReports.filter((p) => p.drive_file_id || p.drive_synced_at);
+
+  // Check physical storage disk usage
+  let totalPhotoFiles = 0;
+  let totalPhotoBytes = 0;
+  try {
+    if (fs.existsSync(PHOTOS_DIR)) {
+      const files = fs.readdirSync(PHOTOS_DIR);
+      totalPhotoFiles = files.length;
+      for (const f of files) {
+        try {
+          const stat = fs.statSync(path.join(PHOTOS_DIR, f));
+          totalPhotoBytes += stat.size;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  res.json({
+    reports: photoReports,
+    stats: {
+      total: photoReports.length,
+      valid_30_days: valid30Days.length,
+      expiring_soon: expiringSoon.length,
+      expired: photoReports.length - valid30Days.length,
+      drive_synced: driveSynced.length,
+      total_files: totalPhotoFiles,
+      total_bytes: totalPhotoBytes,
+      total_mb: (totalPhotoBytes / (1024 * 1024)).toFixed(2),
+    },
+  });
+});
+
+// Direct photo download with custom filename
+app.get('/api/photos/:filename/download', (req: Request, res: Response) => {
+  const { filename } = req.params;
+  const safeFilename = path.basename(filename);
+  const filePath = path.join(PHOTOS_DIR, safeFilename);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send('Photo not found');
+  }
+
+  const downloadName = typeof req.query.name === 'string' && req.query.name.trim()
+    ? req.query.name.trim()
+    : safeFilename;
+
+  res.download(filePath, downloadName);
+});
+
+
 // ==========================================
 // GOOGLE SHEETS SYNC & APPS SCRIPT TEMPLATE
 // ==========================================

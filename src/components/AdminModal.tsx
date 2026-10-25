@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   Lock,
@@ -20,8 +20,31 @@ import {
   ExternalLink,
   LogOut,
   HardDrive,
+  FolderArchive,
+  Clock,
+  Eye,
+  Image as ImageIcon,
+  Calendar,
+  Filter,
+  CheckSquare,
+  Square,
+  Search,
+  Cloud,
+  ArrowDownToLine,
+  Archive,
+  Info,
 } from 'lucide-react';
-import { Employee, Checkpoint, SystemSettings, SyncLog, SystemStatus, Report } from '../types.ts';
+import JSZip from 'jszip';
+import {
+  Employee,
+  Checkpoint,
+  SystemSettings,
+  SyncLog,
+  SystemStatus,
+  Report,
+  PhotoArchiveReport,
+  PhotoArchiveStats,
+} from '../types.ts';
 import officialLogo from '../assets/images/kanoksuwan_logo.jpg';
 import { User } from 'firebase/auth';
 import {
@@ -34,6 +57,7 @@ import {
   syncReportsToGoogleDrive,
   TARGET_FOLDER_NAME,
 } from '../services/googleDrive.ts';
+
 
 interface AdminModalProps {
   isOpen: boolean;
@@ -57,8 +81,28 @@ export const AdminModal: React.FC<AdminModalProps> = ({
 
   // Active Admin Tab
   const [activeTab, setActiveTab] = useState<
-    'employees' | 'checkpoints' | 'export_sheets' | 'settings'
-  >('export_sheets');
+    'photo_archive' | 'export_sheets' | 'employees' | 'checkpoints' | 'settings'
+  >('photo_archive');
+
+  // Photo Archive States (30-day retention folder)
+  const [photoArchiveReports, setPhotoArchiveReports] = useState<PhotoArchiveReport[]>([]);
+  const [photoArchiveStats, setPhotoArchiveStats] = useState<PhotoArchiveStats | null>(null);
+  const [isPhotoArchiveLoading, setIsPhotoArchiveLoading] = useState(false);
+  const [archiveSearchQuery, setArchiveSearchQuery] = useState('');
+  const [archiveFilterRetention, setArchiveFilterRetention] = useState<
+    'within_30' | 'expiring_soon' | 'not_synced' | 'all'
+  >('within_30');
+  const [archiveFilterGuard, setArchiveFilterGuard] = useState('all');
+  const [archiveFilterDate, setArchiveFilterDate] = useState('');
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<string>>(new Set());
+  const [isDownloadingZip, setIsDownloadingZip] = useState(false);
+  const [zipProgress, setZipProgress] = useState<string | null>(null);
+  const [lightboxPhoto, setLightboxPhoto] = useState<PhotoArchiveReport | null>(null);
+  const [singleDriveSyncingId, setSingleDriveSyncingId] = useState<string | null>(null);
+  const [archiveNotice, setArchiveNotice] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   // Admin Data States
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -162,7 +206,15 @@ export const AdminModal: React.FC<AdminModalProps> = ({
         setSheetsUrlInput(sData.google_sheets_url || '');
         setGpsRequiredInput(Boolean(sData.gps_required));
         setAutoSyncInput(Boolean(sData.auto_sync_sheets));
-        setCompanyNameInput(sData.company_name || 'บริษัท กนกสุวรรณ แฟซิลิตี้ แมเนจเม้นท์ จำกัด');
+        setCompanyNameInput(sData.company_name || 'บริษัท รักษาความปลอดภัย กนกสุวรรณ และ การจัดการความสะดวก จำกัด');
+      }
+
+      // Always fetch photo archive statistics for the badge
+      const archiveRes = await fetch('/api/admin/photo-archive', { headers });
+      if (archiveRes.ok) {
+        const aData = await archiveRes.json();
+        setPhotoArchiveReports(aData.reports || []);
+        setPhotoArchiveStats(aData.stats || null);
       }
 
       // 2. Tab Specific Data
@@ -188,6 +240,233 @@ export const AdminModal: React.FC<AdminModalProps> = ({
       }
     } catch (e) {
       console.error('Failed to load admin data', e);
+    }
+  };
+
+  // Filtered Archive Photos based on search, retention period, guard, and date
+  const filteredArchiveReports = useMemo(() => {
+    return photoArchiveReports.filter((item) => {
+      // 1. Search Query
+      if (archiveSearchQuery.trim()) {
+        const q = archiveSearchQuery.toLowerCase().trim();
+        const matchName = item.employee_name_snapshot.toLowerCase().includes(q);
+        const matchCp = (item.checkpoint_name || '').toLowerCase().includes(q);
+        const matchDate = item.report_date_th.includes(q);
+        const matchTime = item.report_time_th.includes(q);
+        if (!matchName && !matchCp && !matchDate && !matchTime) return false;
+      }
+
+      // 2. Retention Filter
+      if (archiveFilterRetention === 'within_30') {
+        if (item.is_expired) return false;
+      } else if (archiveFilterRetention === 'expiring_soon') {
+        if (item.is_expired || item.remaining_days > 5) return false;
+      } else if (archiveFilterRetention === 'not_synced') {
+        if (item.drive_file_id || item.drive_synced_at) return false;
+      }
+
+      // 3. Guard Filter
+      if (archiveFilterGuard !== 'all') {
+        if (item.employee_name_snapshot !== archiveFilterGuard) return false;
+      }
+
+      // 4. Date Filter
+      if (archiveFilterDate) {
+        const [y, m, d] = archiveFilterDate.split('-');
+        const formatted = `${d}/${m}/${y}`;
+        if (item.report_date_th !== formatted) return false;
+      }
+
+      return true;
+    });
+  }, [
+    photoArchiveReports,
+    archiveSearchQuery,
+    archiveFilterRetention,
+    archiveFilterGuard,
+    archiveFilterDate,
+  ]);
+
+  // Unique list of guards for filter dropdown
+  const uniqueArchiveGuards = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of photoArchiveReports) {
+      if (r.employee_name_snapshot) set.add(r.employee_name_snapshot);
+    }
+    return Array.from(set).sort();
+  }, [photoArchiveReports]);
+
+  // Selection handlers
+  const handleToggleSelectPhoto = (id: string) => {
+    setSelectedPhotoIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllVisiblePhotos = () => {
+    if (selectedPhotoIds.size === filteredArchiveReports.length && filteredArchiveReports.length > 0) {
+      setSelectedPhotoIds(new Set());
+    } else {
+      setSelectedPhotoIds(new Set(filteredArchiveReports.map((r) => r.id)));
+    }
+  };
+
+  // Download single photo
+  const handleDownloadSinglePhoto = async (rep: PhotoArchiveReport) => {
+    try {
+      const res = await fetch(rep.photo_url);
+      if (!res.ok) throw new Error('ไม่สามารถดึงรูปภาพได้');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const dateClean = rep.report_date_th.replace(/\//g, '-');
+      const timeClean = rep.report_time_th.replace(/:/g, '-');
+      const guardClean = rep.employee_name_snapshot.replace(/\s+/g, '_');
+      const cpClean = (rep.checkpoint_name || 'จุดตรวจ').replace(/\s+/g, '_');
+      a.download = `KSCP_รูปรายงานตัว_${dateClean}_${timeClean}_${guardClean}_${cpClean}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert('เกิดข้อผิดพลาดในการดาวน์โหลดรูป: ' + err.message);
+    }
+  };
+
+  // Batch download selected photos as .ZIP
+  const handleBatchDownloadZip = async () => {
+    const targetReports = filteredArchiveReports.filter((r) => selectedPhotoIds.has(r.id));
+    if (targetReports.length === 0) {
+      alert('กรุณาเลือกรูปภาพอย่างน้อย 1 รูปที่ต้องการเซฟย้อนหลังเป็นไฟล์ ZIP');
+      return;
+    }
+
+    setIsDownloadingZip(true);
+    setZipProgress(`กำลังเตรียมดาวน์โหลด 0/${targetReports.length}...`);
+
+    try {
+      const zip = new JSZip();
+      const folder = zip.folder('รวมรูปถ่ายรปภ_ย้อนหลัง30วัน');
+
+      for (let i = 0; i < targetReports.length; i++) {
+        const rep = targetReports[i];
+        setZipProgress(`กำลังโหลดรูปที่ ${i + 1}/${targetReports.length} (${rep.employee_name_snapshot})...`);
+        try {
+          const res = await fetch(rep.photo_url);
+          if (res.ok) {
+            const blob = await res.blob();
+            const dateClean = rep.report_date_th.replace(/\//g, '-');
+            const timeClean = rep.report_time_th.replace(/:/g, '-');
+            const guardClean = rep.employee_name_snapshot.replace(/\s+/g, '_');
+            const cpClean = (rep.checkpoint_name || 'จุดตรวจ').replace(/\s+/g, '_');
+            const fileName = `${dateClean}_${timeClean}_${guardClean}_${cpClean}.jpg`;
+            folder?.file(fileName, blob);
+          }
+        } catch (itemErr) {
+          console.warn('Failed to fetch photo for zip:', rep.id, itemErr);
+        }
+      }
+
+      setZipProgress('กำลังบีบอัดไฟล์ ZIP...');
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0];
+      a.download = `KSCP_รูปถ่ายรปภ_ย้อนหลัง30วัน_${dateStr}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setArchiveNotice({
+        type: 'success',
+        message: `ดาวน์โหลดรูปภาพย้อนหลังสำเร็จ ${targetReports.length} รูปเรียบร้อยแล้ว`,
+      });
+      setTimeout(() => setArchiveNotice(null), 5000);
+    } catch (err: any) {
+      setArchiveNotice({
+        type: 'error',
+        message: 'ดาวน์โหลดไฟล์ ZIP ไม่สำเร็จ: ' + err.message,
+      });
+    } finally {
+      setIsDownloadingZip(false);
+      setZipProgress(null);
+    }
+  };
+
+  // Sync selected photos to Google Drive folder
+  const handleSyncSelectedToDrive = async () => {
+    if (!driveUser) {
+      await handleGoogleDriveSignIn();
+      return;
+    }
+
+    const targetReports = filteredArchiveReports.filter((r) => selectedPhotoIds.has(r.id));
+    if (targetReports.length === 0) {
+      alert('กรุณาเลือกรูปภาพที่ต้องการซิงก์ไปยัง Google Drive อย่างน้อย 1 รูป');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `ต้องการซิงก์รูปถ่ายที่เลือกจำนวน ${targetReports.length} รูป ไปยังโฟลเดอร์ "${TARGET_FOLDER_NAME}" บน Google Drive ใช่หรือไม่?`
+    );
+    if (!confirmed) return;
+
+    setDriveSyncing(true);
+    setDriveError(null);
+    try {
+      const result = await syncReportsToGoogleDrive(targetReports, (current, total, name) => {
+        setDriveSyncProgress({ current, total, name });
+      });
+      setArchiveNotice({
+        type: 'success',
+        message: `ซิงก์รูปย้อนหลังไปยัง Google Drive สำเร็จ ${result.successCount} รูป`,
+      });
+      setTimeout(() => setArchiveNotice(null), 5000);
+      loadAdminData();
+    } catch (err: any) {
+      setArchiveNotice({
+        type: 'error',
+        message: err.message || 'ซิงก์รูปภาพไปยัง Google Drive ไม่สำเร็จ',
+      });
+    } finally {
+      setDriveSyncing(false);
+      setDriveSyncProgress(null);
+    }
+  };
+
+  // Sync single photo to Google Drive
+  const handleSyncSinglePhotoToDrive = async (rep: PhotoArchiveReport) => {
+    if (!driveUser) {
+      await handleGoogleDriveSignIn();
+      return;
+    }
+
+    setSingleDriveSyncingId(rep.id);
+    try {
+      await syncReportsToGoogleDrive([rep]);
+      setArchiveNotice({
+        type: 'success',
+        message: `ซิงก์รูปของ ${rep.employee_name_snapshot} ขึ้น Google Drive สำเร็จ`,
+      });
+      setTimeout(() => setArchiveNotice(null), 4000);
+      loadAdminData();
+    } catch (err: any) {
+      setArchiveNotice({
+        type: 'error',
+        message: err.message || 'ซิงก์รูปภาพไม่สำเร็จ',
+      });
+    } finally {
+      setSingleDriveSyncingId(null);
     }
   };
 
@@ -614,6 +893,23 @@ export const AdminModal: React.FC<AdminModalProps> = ({
             {/* Admin Tabs */}
             <div className="flex border-b border-slate-200 bg-slate-50 px-4 overflow-x-auto gap-1">
               <button
+                onClick={() => setActiveTab('photo_archive')}
+                className={`py-3 px-3.5 text-xs sm:text-sm font-semibold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
+                  activeTab === 'photo_archive'
+                    ? 'border-emerald-800 text-emerald-950 bg-white shadow-2xs'
+                    : 'border-transparent text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <FolderArchive className="w-4 h-4 text-emerald-700" />
+                <span>โฟลเดอร์รูปภาพ 30 วัน</span>
+                {photoArchiveStats && (
+                  <span className="ml-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">
+                    {photoArchiveStats.valid_30_days}
+                  </span>
+                )}
+              </button>
+
+              <button
                 onClick={() => setActiveTab('export_sheets')}
                 className={`py-3 px-3.5 text-xs sm:text-sm font-semibold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   activeTab === 'export_sheets'
@@ -664,11 +960,457 @@ export const AdminModal: React.FC<AdminModalProps> = ({
 
             {/* Tab Contents */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+              {/* TAB 0: PHOTO ARCHIVE (30-DAY RETENTION FOLDER) */}
+              {activeTab === 'photo_archive' && (
+                <div className="space-y-5">
+                  {/* Notice Alert */}
+                  {archiveNotice && (
+                    <div
+                      className={`p-3.5 rounded-xl text-xs flex items-center justify-between border ${
+                        archiveNotice.type === 'success'
+                          ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                          : 'bg-red-50 text-red-900 border-red-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {archiveNotice.type === 'success' ? (
+                          <CheckCircle className="w-4 h-4 text-emerald-700 shrink-0" />
+                        ) : (
+                          <AlertTriangle className="w-4 h-4 text-red-700 shrink-0" />
+                        )}
+                        <span className="font-medium">{archiveNotice.message}</span>
+                      </div>
+                      <button
+                        onClick={() => setArchiveNotice(null)}
+                        className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Header & Policy Banner */}
+                  <div className="bg-linear-to-r from-emerald-950 via-slate-900 to-emerald-900 text-white rounded-2xl p-4 sm:p-5 shadow-sm space-y-3">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center border border-amber-400/30 shrink-0">
+                          <FolderArchive className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="text-base font-bold text-white">
+                              โฟลเดอร์เก็บรูปภาพ รปภ. (คลังเซฟย้อนหลัง 30 วัน)
+                            </h3>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400 text-slate-950 shadow-2xs">
+                              อายุจัดเก็บ 30 วัน
+                            </span>
+                          </div>
+                          <p className="text-xs text-emerald-200/80 mt-0.5">
+                            ดาวน์โหลดรูปภาพหรือเซฟย้อนหลังลงเครื่อง / ซิงก์เก็บเข้า Google Drive ประจำหน่วยงาน
+                          </p>
+                        </div>
+                      </div>
+
+                      {driveFolderLink && (
+                        <a
+                          href={driveFolderLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors border border-white/15 shrink-0"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5 text-amber-300" />
+                          <span>เปิดโฟลเดอร์ใน Google Drive</span>
+                        </a>
+                      )}
+                    </div>
+
+                    <div className="bg-emerald-950/70 rounded-xl p-3 border border-emerald-800/60 text-xs text-emerald-100 flex items-start gap-2.5">
+                      <Info className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-semibold text-amber-300">ข้อกำหนดอายุการจัดเก็บรูปภาพ: </span>
+                        รูปถ่ายรายงานตัวของเจ้าหน้าที่ รปภ. จะมีอายุ <strong>30 วัน</strong> สำหรับดาวน์โหลดหรือเซฟย้อนหลังนับจากวันเวลาที่ถ่ายรายงานตัว เมื่อเกิน 30 วัน รูปภาพจะเข้าสู่สถานะหมดอายุการเซฟย้อนหลัง แนะนำให้แอดมินดาวน์โหลดลงเครื่องเป็นไฟล์ .ZIP หรือซิงก์เข้าสู่ Google Drive โฟลเดอร์ &quot;{TARGET_FOLDER_NAME}&quot; อย่างสม่ำเสมอ
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Top Stats Cards */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <div className="flex items-center justify-between text-slate-500 mb-1">
+                        <span className="text-[11px] font-medium">รูปภาพในระยะ 30 วัน</span>
+                        <FolderArchive className="w-4 h-4 text-emerald-600" />
+                      </div>
+                      <div className="text-xl font-bold text-slate-900">
+                        {photoArchiveStats?.valid_30_days ?? 0}{' '}
+                        <span className="text-xs font-normal text-slate-500">รูป (พร้อมเซฟ)</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <div className="flex items-center justify-between text-slate-500 mb-1">
+                        <span className="text-[11px] font-medium">ใกล้หมดอายุ (&le; 5 วัน)</span>
+                        <Clock className="w-4 h-4 text-amber-500" />
+                      </div>
+                      <div className="text-xl font-bold text-amber-600">
+                        {photoArchiveStats?.expiring_soon ?? 0}{' '}
+                        <span className="text-xs font-normal text-slate-500">รูป</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <div className="flex items-center justify-between text-slate-500 mb-1">
+                        <span className="text-[11px] font-medium">ซิงก์เข้า Google Drive</span>
+                        <Cloud className="w-4 h-4 text-blue-500" />
+                      </div>
+                      <div className="text-xl font-bold text-blue-600">
+                        {photoArchiveStats?.drive_synced ?? 0}{' '}
+                        <span className="text-xs font-normal text-slate-500">
+                          / {photoArchiveStats?.total ?? 0} รูป
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <div className="flex items-center justify-between text-slate-500 mb-1">
+                        <span className="text-[11px] font-medium">ขนาดพื้นที่จัดเก็บ</span>
+                        <HardDrive className="w-4 h-4 text-slate-600" />
+                      </div>
+                      <div className="text-xl font-bold text-slate-900">
+                        {photoArchiveStats?.total_mb ?? '0.00'}{' '}
+                        <span className="text-xs font-normal text-slate-500">
+                          MB ({photoArchiveStats?.total_files ?? 0} รูป)
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Filter & Toolbar */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-2xs space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                      {/* Search */}
+                      <div className="relative">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={archiveSearchQuery}
+                          onChange={(e) => setArchiveSearchQuery(e.target.value)}
+                          placeholder="ค้นหาชื่อ รปภ. / จุดตรวจ..."
+                          className="w-full pl-9 pr-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-700 text-slate-900"
+                        />
+                      </div>
+
+                      {/* Retention Filter */}
+                      <div>
+                        <select
+                          value={archiveFilterRetention}
+                          onChange={(e: any) => setArchiveFilterRetention(e.target.value)}
+                          className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-700 text-slate-900"
+                        >
+                          <option value="within_30">รูปในระยะ 30 วัน (พร้อมเซฟ)</option>
+                          <option value="expiring_soon">ใกล้หมดอายุ (&le; 5 วัน)</option>
+                          <option value="not_synced">ยังไม่ได้ซิงก์ Google Drive</option>
+                          <option value="all">รูปภาพทั้งหมด (รวมเกิน 30 วัน)</option>
+                        </select>
+                      </div>
+
+                      {/* Guard Filter */}
+                      <div>
+                        <select
+                          value={archiveFilterGuard}
+                          onChange={(e) => setArchiveFilterGuard(e.target.value)}
+                          className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-700 text-slate-900"
+                        >
+                          <option value="all">รปภ. ทั้งหมด ({uniqueArchiveGuards.length} นาย)</option>
+                          {uniqueArchiveGuards.map((g) => (
+                            <option key={g} value={g}>
+                              {g}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Date Filter */}
+                      <div>
+                        <input
+                          type="date"
+                          value={archiveFilterDate}
+                          onChange={(e) => setArchiveFilterDate(e.target.value)}
+                          className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-700 text-slate-900"
+                          title="กรองตามวันที่รายงานตัว"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Action Bar (Batch Selection & Download) */}
+                    <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2.5">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleSelectAllVisiblePhotos}
+                          className="px-3 py-1.5 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          {selectedPhotoIds.size === filteredArchiveReports.length &&
+                          filteredArchiveReports.length > 0 ? (
+                            <CheckSquare className="w-3.5 h-3.5 text-emerald-700" />
+                          ) : (
+                            <Square className="w-3.5 h-3.5 text-slate-400" />
+                          )}
+                          <span>
+                            {selectedPhotoIds.size === filteredArchiveReports.length &&
+                            filteredArchiveReports.length > 0
+                              ? 'ยกเลิกการเลือกทั้งหมด'
+                              : `เลือกทั้งหมด (${filteredArchiveReports.length} รูป)`}
+                          </span>
+                        </button>
+
+                        {selectedPhotoIds.size > 0 && (
+                          <span className="text-xs font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">
+                            เลือกอยู่ {selectedPhotoIds.size} รูป
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Batch Download ZIP */}
+                        <button
+                          onClick={handleBatchDownloadZip}
+                          disabled={isDownloadingZip || selectedPhotoIds.size === 0}
+                          className="px-3.5 py-1.5 rounded-xl bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
+                          title="ดาวน์โหลดรูปภาพที่เลือกรวมเป็นไฟล์ .ZIP เพื่อเซฟลงเครื่องย้อนหลัง"
+                        >
+                          {isDownloadingZip ? (
+                            <>
+                              <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              <span>{zipProgress || 'กำลังบีบอัด...'}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Archive className="w-3.5 h-3.5 text-amber-300" />
+                              <span>
+                                เซฟย้อนหลังเป็น .ZIP ({selectedPhotoIds.size} รูป)
+                              </span>
+                            </>
+                          )}
+                        </button>
+
+                        {/* Batch Drive Sync */}
+                        <button
+                          onClick={handleSyncSelectedToDrive}
+                          disabled={driveSyncing || selectedPhotoIds.size === 0}
+                          className="px-3.5 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
+                          title="ซิงก์รูปถ่ายที่เลือกไปยัง Google Drive"
+                        >
+                          {driveSyncing ? (
+                            <>
+                              <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                              <span>กำลังซิงก์ Drive...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Cloud className="w-3.5 h-3.5 text-amber-300" />
+                              <span>ซิงก์เข้า Google Drive</span>
+                            </>
+                          )}
+                        </button>
+
+                        {/* Refresh Button */}
+                        <button
+                          onClick={loadAdminData}
+                          className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                          title="รีเฟรชข้อมูลคลังรูปภาพ"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Photo Cards Grid */}
+                  {filteredArchiveReports.length === 0 ? (
+                    <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-10 text-center space-y-3">
+                      <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                        <ImageIcon className="w-6 h-6" />
+                      </div>
+                      <h4 className="text-sm font-bold text-slate-700">ไม่พบรูปภาพตามเงื่อนไขที่เลือก</h4>
+                      <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                        {archiveSearchQuery || archiveFilterDate || archiveFilterGuard !== 'all'
+                          ? 'ลองปรับคำค้นหาหรือตัวกรองเพื่อค้นหารูปภาพที่ต้องการ'
+                          : 'ยังไม่มีรูปภาพรายงานตัวที่บันทึกไว้ในระบบ'}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {filteredArchiveReports.map((rep) => {
+                        const isSelected = selectedPhotoIds.has(rep.id);
+                        const isExpiringSoon = !rep.is_expired && rep.remaining_days <= 5;
+                        const isExpired = rep.is_expired;
+
+                        return (
+                          <div
+                            key={rep.id}
+                            className={`bg-white rounded-2xl border transition-all shadow-2xs overflow-hidden flex flex-col ${
+                              isSelected
+                                ? 'border-emerald-600 ring-2 ring-emerald-600/20'
+                                : 'border-slate-200 hover:border-slate-300'
+                            }`}
+                          >
+                            {/* Image Header with Badges */}
+                            <div className="relative aspect-4/3 bg-slate-900 group overflow-hidden">
+                              <img
+                                src={rep.photo_url}
+                                alt={`รูปรายงานตัว ${rep.employee_name_snapshot}`}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                loading="lazy"
+                              />
+
+                              {/* Selection Checkbox */}
+                              <button
+                                onClick={() => handleToggleSelectPhoto(rep.id)}
+                                className="absolute top-2.5 left-2.5 w-7 h-7 rounded-lg bg-black/60 backdrop-blur-xs text-white flex items-center justify-center hover:bg-black/80 transition-colors cursor-pointer"
+                                title={isSelected ? 'ยกเลิกการเลือก' : 'เลือกรูปนี้'}
+                              >
+                                {isSelected ? (
+                                  <CheckSquare className="w-4 h-4 text-emerald-400" />
+                                ) : (
+                                  <Square className="w-4 h-4 text-white/80" />
+                                )}
+                              </button>
+
+                              {/* 30-Day Retention Countdown Badge */}
+                              <div className="absolute top-2.5 right-2.5">
+                                {isExpired ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800/90 text-red-300 border border-red-500/40 backdrop-blur-xs flex items-center gap-1 shadow-xs">
+                                    <Clock className="w-3 h-3 text-red-400" />
+                                    <span>หมดอายุเซฟย้อนหลัง (&gt;30 วัน)</span>
+                                  </span>
+                                ) : isExpiringSoon ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 flex items-center gap-1 shadow-md animate-pulse">
+                                    <AlertTriangle className="w-3 h-3 text-slate-950" />
+                                    <span>ใกล้หมดอายุ: เหลืออีก {rep.remaining_days} วัน</span>
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/80 text-emerald-200 border border-emerald-500/40 backdrop-blur-xs flex items-center gap-1 shadow-xs">
+                                    <Clock className="w-3 h-3 text-emerald-400" />
+                                    <span>เหลือเวลาเซฟ {rep.remaining_days} วัน</span>
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Quick Zoom Button */}
+                              <button
+                                onClick={() => setLightboxPhoto(rep)}
+                                className="absolute bottom-2.5 right-2.5 px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur-xs text-white text-[11px] font-medium flex items-center gap-1 hover:bg-black/85 transition-colors cursor-pointer"
+                                title="เปิดดูภาพขนาดเต็ม"
+                              >
+                                <Eye className="w-3.5 h-3.5 text-amber-300" />
+                                <span>ดูภาพเต็ม</span>
+                              </button>
+                            </div>
+
+                            {/* Card Body */}
+                            <div className="p-3.5 space-y-2.5 flex-1 flex flex-col justify-between">
+                              <div className="space-y-1.5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="font-bold text-xs text-slate-900 truncate">
+                                    รปภ. {rep.employee_name_snapshot}
+                                  </div>
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                                      rep.situation === 'normal'
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : rep.situation === 'abnormal'
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : 'bg-red-100 text-red-800'
+                                    }`}
+                                  >
+                                    {rep.situation === 'normal'
+                                      ? 'ปกติ'
+                                      : rep.situation === 'abnormal'
+                                      ? 'ไม่ปกติ'
+                                      : 'ฉุกเฉิน'}
+                                  </span>
+                                </div>
+
+                                <div className="text-[11px] text-slate-600 flex items-center gap-1.5">
+                                  <MapPin className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                                  <span className="truncate">
+                                    {rep.checkpoint_name || 'ไม่ระบุจุดตรวจ'}
+                                  </span>
+                                </div>
+
+                                <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                                  <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                  <span>
+                                    {rep.report_date_th} เวลา {rep.report_time_th} น.
+                                  </span>
+                                </div>
+
+                                {/* Drive Sync status */}
+                                <div className="pt-1 flex items-center justify-between text-[11px]">
+                                  {rep.drive_file_id || rep.drive_synced_at ? (
+                                    <div className="flex items-center gap-1 text-emerald-700 font-medium">
+                                      <CheckCircle className="w-3.5 h-3.5" />
+                                      <span>ซิงก์ Google Drive แล้ว</span>
+                                    </div>
+                                  ) : (
+                                    <div className="text-slate-400 text-[10px]">
+                                      ยังไม่ได้ซิงก์ Google Drive
+                                    </div>
+                                  )}
+
+                                  {rep.drive_web_view_link && (
+                                    <a
+                                      href={rep.drive_web_view_link}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-600 hover:underline flex items-center gap-1 text-[10px] font-semibold"
+                                    >
+                                      <span>ดูบน Drive</span>
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Card Action Buttons */}
+                              <div className="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2">
+                                <button
+                                  onClick={() => handleDownloadSinglePhoto(rep)}
+                                  className="py-1.5 px-2 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors cursor-pointer border border-emerald-200"
+                                  title="ดาวน์โหลดรูปภาพนี้ลงเครื่อง"
+                                >
+                                  <ArrowDownToLine className="w-3.5 h-3.5" />
+                                  <span>เซฟรูป (JPG)</span>
+                                </button>
+
+                                <button
+                                  onClick={() => handleSyncSinglePhotoToDrive(rep)}
+                                  disabled={singleDriveSyncingId === rep.id}
+                                  className="py-1.5 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors cursor-pointer border border-slate-300 disabled:opacity-50"
+                                  title="ซิงก์รูปนี้ไปยัง Google Drive รวมรูปถ่ายรปภ.กัลยา"
+                                >
+                                  {singleDriveSyncingId === rep.id ? (
+                                    <div className="w-3 h-3 border-2 border-slate-700 border-t-transparent rounded-full animate-spin" />
+                                  ) : (
+                                    <Cloud className="w-3.5 h-3.5 text-blue-600" />
+                                  )}
+                                  <span>ซิงก์ Drive</span>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* TAB 1: CSV EXPORT & GOOGLE SHEETS */}
               {activeTab === 'export_sheets' && (
                 <div className="space-y-6">
                   {/* CSV Export Card */}
                   <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
+
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center">
@@ -1410,7 +2152,116 @@ export const AdminModal: React.FC<AdminModalProps> = ({
             </div>
           </div>
         )}
+
+        {/* Photo Lightbox / Preview Modal */}
+        {lightboxPhoto && (
+          <div className="fixed inset-0 z-60 bg-black/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6">
+            <div className="relative bg-white rounded-2xl max-w-3xl w-full max-h-[92vh] flex flex-col overflow-hidden shadow-2xl">
+              {/* Modal Header */}
+              <div className="px-5 py-3.5 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-800 text-white flex items-center justify-center">
+                    <ImageIcon className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">
+                      รูปรายงานตัว: รปภ. {lightboxPhoto.employee_name_snapshot}
+                    </h4>
+                    <p className="text-[11px] text-slate-300">
+                      {lightboxPhoto.report_date_th} เวลา {lightboxPhoto.report_time_th} น. · {lightboxPhoto.checkpoint_name || 'ไม่ระบุจุดตรวจ'}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setLightboxPhoto(null)}
+                  className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors cursor-pointer"
+                  title="ปิด"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Photo Display */}
+              <div className="flex-1 bg-slate-950 flex items-center justify-center overflow-hidden p-2 min-h-[300px]">
+                <img
+                  src={lightboxPhoto.photo_url}
+                  alt={`รูปรายงานตัว ${lightboxPhoto.employee_name_snapshot}`}
+                  className="max-h-[60vh] max-w-full object-contain rounded-lg shadow-lg"
+                />
+              </div>
+
+              {/* Modal Details & Action Bar */}
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="space-y-1 text-xs">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-slate-700">อายุการเซฟย้อนหลัง:</span>
+                    {lightboxPhoto.is_expired ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-300">
+                        หมดอายุแล้ว (&gt;30 วัน)
+                      </span>
+                    ) : lightboxPhoto.remaining_days <= 5 ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                        ⚠️ ใกล้หมดอายุ: เหลืออีก {lightboxPhoto.remaining_days} วัน
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                        เหลือเวลาเซฟย้อนหลังอีก {lightboxPhoto.remaining_days} วัน (อายุ 30 วัน)
+                      </span>
+                    )}
+
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        lightboxPhoto.situation === 'normal'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : lightboxPhoto.situation === 'abnormal'
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-red-100 text-red-800'
+                      }`}
+                    >
+                      {lightboxPhoto.situation === 'normal'
+                        ? 'ปกติ'
+                        : lightboxPhoto.situation === 'abnormal'
+                        ? 'ไม่ปกติ'
+                        : 'ฉุกเฉิน'}
+                    </span>
+                  </div>
+
+                  {lightboxPhoto.incident_description && (
+                    <p className="text-slate-600 italic text-[11px]">
+                      &quot;{lightboxPhoto.incident_description}&quot;
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleDownloadSinglePhoto(lightboxPhoto)}
+                    className="py-2 px-3.5 rounded-xl bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                  >
+                    <ArrowDownToLine className="w-4 h-4 text-amber-300" />
+                    <span>ดาวน์โหลดรูปนี้ (JPG)</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSyncSinglePhotoToDrive(lightboxPhoto)}
+                    disabled={singleDriveSyncingId === lightboxPhoto.id}
+                    className="py-2 px-3.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {singleDriveSyncingId === lightboxPhoto.id ? (
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <Cloud className="w-4 h-4 text-amber-300" />
+                    )}
+                    <span>ซิงก์ Google Drive</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 };
+
