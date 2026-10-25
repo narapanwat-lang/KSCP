@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Report } from '../types.ts';
 import { ReportDetailModal } from './ReportDetailModal.tsx';
+import { fetchJson } from '../services/apiClient.ts';
 
 interface ReportsTableProps {
   onExportCsv?: () => void;
@@ -56,11 +57,13 @@ export const ReportsTable: React.FC<ReportsTableProps> = ({
       params.set('page', String(pageToFetch));
       params.set('limit', '15');
 
-      const res = await fetch(`/api/reports?${params.toString()}`);
-      if (!res.ok) {
-        throw new Error('ไม่สามารถโหลดข้อมูลรายงานได้');
-      }
-      const data = await res.json();
+      const data = await fetchJson<{
+        reports: Report[];
+        totalPages: number;
+        total: number;
+        page: number;
+      }>(`/api/reports?${params.toString()}`);
+
       setReports(data.reports || []);
       setTotalPages(data.totalPages || 1);
       setTotalCount(data.total || 0);

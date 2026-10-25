@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Employee, Checkpoint, SituationType, Report } from '../types.ts';
 import { CameraModal } from './CameraModal.tsx';
+import { fetchJson } from '../services/apiClient.ts';
 
 interface GuardCheckinFormProps {
   onSuccess: (report: Report) => void;
@@ -94,11 +95,8 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
 
   const fetchEmployees = async () => {
     try {
-      const res = await fetch('/api/employees');
-      if (res.ok) {
-        const data = await res.json();
-        setEmployeesList(data);
-      }
+      const data = await fetchJson<Employee[]>('/api/employees');
+      setEmployeesList(data);
     } catch (e) {
       console.warn('Could not load employees list', e);
     }
@@ -106,14 +104,11 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
 
   const fetchCheckpoints = async () => {
     try {
-      const res = await fetch('/api/checkpoints');
-      if (res.ok) {
-        const data = await res.json();
-        setCheckpoints(data.checkpoints || []);
-        setGpsRequired(Boolean(data.gpsRequired));
-        if (data.checkpoints && data.checkpoints.length > 0) {
-          setSelectedCheckpointId(data.checkpoints[0].id);
-        }
+      const data = await fetchJson<{ checkpoints: Checkpoint[]; gpsRequired: boolean }>('/api/checkpoints');
+      setCheckpoints(data.checkpoints || []);
+      setGpsRequired(Boolean(data.gpsRequired));
+      if (data.checkpoints && data.checkpoints.length > 0) {
+        setSelectedCheckpointId(data.checkpoints[0].id);
       }
     } catch (e) {
       console.warn('Could not load checkpoints', e);
@@ -211,17 +206,11 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
         checkpoint_id: selectedCheckpointId || null,
       };
 
-      const res = await fetch('/api/reports', {
+      const data = await fetchJson<{ success: boolean; report: Report }>('/api/reports', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'เกิดข้อผิดพลาดในการบันทึกรายงาน');
-      }
 
       // Save employee name to local storage for quick selection next time
       localStorage.setItem('kscp_last_employee', cleanName);

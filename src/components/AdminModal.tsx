@@ -57,6 +57,7 @@ import {
   syncReportsToGoogleDrive,
   TARGET_FOLDER_NAME,
 } from '../services/googleDrive.ts';
+import { fetchJson } from '../services/apiClient.ts';
 
 
 interface AdminModalProps {
@@ -193,50 +194,57 @@ export const AdminModal: React.FC<AdminModalProps> = ({
 
     try {
       // 1. Settings & Health
-      const healthRes = await fetch('/api/health');
-      if (healthRes.ok) {
-        const hData = await healthRes.json();
+      try {
+        const hData = await fetchJson<SystemStatus>('/api/health');
         setSystemHealth(hData);
+      } catch (e) {
+        console.warn('Health fetch error:', e);
       }
 
-      const settingsRes = await fetch('/api/admin/settings', { headers });
-      if (settingsRes.ok) {
-        const sData = await settingsRes.json();
+      try {
+        const sData = await fetchJson<SystemSettings>('/api/admin/settings', { headers });
         setSettings(sData);
         setSheetsUrlInput(sData.google_sheets_url || '');
         setGpsRequiredInput(Boolean(sData.gps_required));
         setAutoSyncInput(Boolean(sData.auto_sync_sheets));
         setCompanyNameInput(sData.company_name || 'บริษัท รักษาความปลอดภัย กนกสุวรรณ และ การจัดการความสะดวก จำกัด');
+      } catch (e) {
+        console.warn('Settings fetch error:', e);
       }
 
       // Always fetch photo archive statistics for the badge
-      const archiveRes = await fetch('/api/admin/photo-archive', { headers });
-      if (archiveRes.ok) {
-        const aData = await archiveRes.json();
+      try {
+        const aData = await fetchJson<{ reports: PhotoArchiveReport[]; stats: PhotoArchiveStats }>(
+          '/api/admin/photo-archive',
+          { headers }
+        );
         setPhotoArchiveReports(aData.reports || []);
         setPhotoArchiveStats(aData.stats || null);
+      } catch (e) {
+        console.warn('Photo archive fetch error:', e);
       }
 
       // 2. Tab Specific Data
       if (activeTab === 'employees') {
-        const empRes = await fetch('/api/admin/employees', { headers });
-        if (empRes.ok) setEmployees(await empRes.json());
+        const emps = await fetchJson<Employee[]>('/api/admin/employees', { headers });
+        setEmployees(emps);
       } else if (activeTab === 'checkpoints') {
-        const cpRes = await fetch('/api/admin/checkpoints', { headers });
-        if (cpRes.ok) setCheckpoints(await cpRes.json());
+        const cps = await fetchJson<Checkpoint[]>('/api/admin/checkpoints', { headers });
+        setCheckpoints(cps);
       } else if (activeTab === 'export_sheets') {
-        const logsRes = await fetch('/api/admin/sync/logs', { headers });
-        if (logsRes.ok) setSyncLogs(await logsRes.json());
+        const logs = await fetchJson<SyncLog[]>('/api/admin/sync/logs', { headers });
+        setSyncLogs(logs);
 
-        const tmplRes = await fetch('/api/admin/google-script-template', { headers });
-        if (tmplRes.ok) setAppScriptTemplate(await tmplRes.text());
+        try {
+          const tmplRes = await fetch('/api/admin/google-script-template', { headers });
+          if (tmplRes.ok) setAppScriptTemplate(await tmplRes.text());
+        } catch (e) {
+          console.warn('Template fetch error:', e);
+        }
 
         // Also fetch all reports for Drive photo sync
-        const repRes = await fetch('/api/reports?limit=500');
-        if (repRes.ok) {
-          const repData = await repRes.json();
-          setReportsForSync(repData.reports || []);
-        }
+        const repData = await fetchJson<{ reports: Report[] }>('/api/reports?limit=500');
+        setReportsForSync(repData.reports || []);
       }
     } catch (e) {
       console.error('Failed to load admin data', e);
@@ -533,16 +541,11 @@ export const AdminModal: React.FC<AdminModalProps> = ({
     setIsLoggingIn(true);
 
     try {
-      const res = await fetch('/api/admin/login', {
+      const data = await fetchJson<{ success: boolean; token: string }>('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ passcode: passcodeInput }),
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'รหัสผ่านไม่ถูกต้อง');
-      }
 
       setPasscodeInput('');
       onLoginSuccess(data.token);
@@ -559,24 +562,23 @@ export const AdminModal: React.FC<AdminModalProps> = ({
     if (!newEmployeeName.trim()) return;
 
     try {
-      const res = await fetch('/api/employees', {
+      await fetchJson('/api/employees', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newEmployeeName.trim() }),
       });
-      if (res.ok) {
-        setNewEmployeeName('');
-        loadAdminData();
-      }
-    } catch (e) {
-      console.error(e);
+      setNewEmployeeName('');
+      loadAdminData();
+    } catch (e: any) {
+      console.error('Failed to add employee:', e);
+      alert(e.message || 'เพิ่มพนักงานไม่สำเร็จ');
     }
   };
 
   const handleToggleEmployeeActive = async (emp: Employee) => {
     if (!adminToken) return;
     try {
-      await fetch(`/api/admin/employees/${emp.id}`, {
+      await fetchJson(`/api/admin/employees/${emp.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -585,15 +587,16 @@ export const AdminModal: React.FC<AdminModalProps> = ({
         body: JSON.stringify({ active: !emp.active }),
       });
       loadAdminData();
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error('Failed to toggle employee:', e);
+      alert(e.message || 'ไม่สามารถแก้ไขสถานะพนักงานได้');
     }
   };
 
   const handleSaveEmployeeName = async (id: string) => {
     if (!adminToken || !editingEmployeeName.trim()) return;
     try {
-      await fetch(`/api/admin/employees/${id}`, {
+      await fetchJson(`/api/admin/employees/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -604,8 +607,9 @@ export const AdminModal: React.FC<AdminModalProps> = ({
       setEditingEmployeeId(null);
       setEditingEmployeeName('');
       loadAdminData();
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error('Failed to save employee name:', e);
+      alert(e.message || 'ไม่สามารถบันทึกชื่อพนักงานได้');
     }
   };
 
@@ -615,7 +619,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
     if (!adminToken || !newCpName.trim() || !newCpLat || !newCpLng) return;
 
     try {
-      const res = await fetch('/api/admin/checkpoints', {
+      await fetchJson('/api/admin/checkpoints', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -629,28 +633,28 @@ export const AdminModal: React.FC<AdminModalProps> = ({
           active: true,
         }),
       });
-      if (res.ok) {
-        setNewCpName('');
-        setNewCpLat('');
-        setNewCpLng('');
-        setNewCpRadius('100');
-        loadAdminData();
-      }
-    } catch (e) {
-      console.error(e);
+      setNewCpName('');
+      setNewCpLat('');
+      setNewCpLng('');
+      setNewCpRadius('100');
+      loadAdminData();
+    } catch (e: any) {
+      console.error('Add checkpoint error:', e);
+      alert(e.message || 'เพิ่มจุดตรวจไม่สำเร็จ');
     }
   };
 
   const handleDeleteCheckpoint = async (id: string) => {
     if (!adminToken || !confirm('คุณแน่ใจว่าต้องการลบจุดตรวจนี้หรือไม่?')) return;
     try {
-      await fetch(`/api/admin/checkpoints/${id}`, {
+      await fetchJson(`/api/admin/checkpoints/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${adminToken}` },
       });
       loadAdminData();
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error('Delete checkpoint error:', e);
+      alert(e.message || 'ลบจุดตรวจไม่สำเร็จ');
     }
   };
 
@@ -684,7 +688,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
         document.body.removeChild(a);
       })
       .catch((err) => {
-        alert(err.message);
+        alert(err.message || 'ดาวน์โหลดไม่สำเร็จ');
       });
   };
 
@@ -696,17 +700,12 @@ export const AdminModal: React.FC<AdminModalProps> = ({
     setSyncError(null);
 
     try {
-      const res = await fetch('/api/admin/sync/google-sheets', {
+      const data = await fetchJson<{ message: string; success: boolean }>('/api/admin/sync/google-sheets', {
         method: 'POST',
         headers: { Authorization: `Bearer ${adminToken}` },
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'การซิงก์ข้อมูลล้มเหลว');
-      }
-
-      setSyncMessage(data.message);
+      setSyncMessage(data.message || 'ซิงก์ข้อมูลสำเร็จ');
       loadAdminData();
     } catch (err: any) {
       setSyncError(err.message || 'ไม่สามารถติดต่อ Google Apps Script ได้');
@@ -746,7 +745,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
         payload.new_passcode = newPasscodeInput.trim();
       }
 
-      const res = await fetch('/api/admin/settings', {
+      await fetchJson('/api/admin/settings', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -754,11 +753,6 @@ export const AdminModal: React.FC<AdminModalProps> = ({
         },
         body: JSON.stringify(payload),
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'บันทึกการตั้งค่าไม่สำเร็จ');
-      }
 
       setSaveSettingsSuccess('บันทึกการตั้งค่าเรียบร้อยแล้ว');
       setNewPasscodeInput('');

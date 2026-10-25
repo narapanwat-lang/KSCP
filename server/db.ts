@@ -3,7 +3,10 @@ import path from 'path';
 import crypto from 'crypto';
 import { DatabaseSchema, Employee, Report, Checkpoint, SyncLog, SystemSettings } from './types.ts';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DATA_DIR = isServerless
+  ? path.resolve('/tmp', 'kscp_data')
+  : path.resolve(process.cwd(), 'data');
 const PHOTOS_DIR = path.resolve(DATA_DIR, 'photos');
 const DB_FILE = path.resolve(DATA_DIR, 'kscp_data.json');
 
@@ -142,11 +145,26 @@ export function calculateDistanceMeters(lat1: number, lon1: number, lat2: number
 }
 
 export function initDb(): DatabaseSchema {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(PHOTOS_DIR)) {
+      fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+    }
+  } catch (err) {
+    console.warn('Could not create storage directories, continuing in memory mode:', err);
   }
-  if (!fs.existsSync(PHOTOS_DIR)) {
-    fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+
+  // If running in /tmp (e.g. Vercel), attempt to seed from project root data/kscp_data.json
+  const repoDataFile = path.resolve(process.cwd(), 'data', 'kscp_data.json');
+  if (isServerless && !fs.existsSync(DB_FILE) && fs.existsSync(repoDataFile)) {
+    try {
+      const seedRaw = fs.readFileSync(repoDataFile, 'utf-8');
+      fs.writeFileSync(DB_FILE, seedRaw, 'utf-8');
+    } catch (e) {
+      console.warn('Could not copy seed database to /tmp:', e);
+    }
   }
 
   if (fs.existsSync(DB_FILE)) {
@@ -155,6 +173,13 @@ export function initDb(): DatabaseSchema {
       dbMemory = JSON.parse(raw);
     } catch (e) {
       console.error('Failed to parse db file, reinitializing', e);
+    }
+  } else if (fs.existsSync(repoDataFile)) {
+    try {
+      const raw = fs.readFileSync(repoDataFile, 'utf-8');
+      dbMemory = JSON.parse(raw);
+    } catch (e) {
+      console.error('Failed to parse repo seed data:', e);
     }
   }
 
@@ -188,9 +213,16 @@ export function getDb(): DatabaseSchema {
 
 export function saveDb(): void {
   if (!dbMemory) return;
-  const tempFile = `${DB_FILE}.${Date.now()}.tmp`;
-  fs.writeFileSync(tempFile, JSON.stringify(dbMemory, null, 2), 'utf-8');
-  fs.renameSync(tempFile, DB_FILE);
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const tempFile = `${DB_FILE}.${Date.now()}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(dbMemory, null, 2), 'utf-8');
+    fs.renameSync(tempFile, DB_FILE);
+  } catch (err) {
+    console.warn('Warning: saveDb could not write to disk (in-memory state preserved):', err);
+  }
 }
 
 // Employee Helpers

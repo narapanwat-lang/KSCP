@@ -5,6 +5,7 @@ import { GuardCheckinForm } from './components/GuardCheckinForm.tsx';
 import { ReportsTable } from './components/ReportsTable.tsx';
 import { AdminModal } from './components/AdminModal.tsx';
 import { Report } from './types.ts';
+import { fetchJson } from './services/apiClient.ts';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<'checkin' | 'reports'>('checkin');
@@ -20,13 +21,10 @@ export default function App() {
     const fetchServerTime = async () => {
       try {
         const start = Date.now();
-        const res = await fetch('/api/time');
-        if (res.ok) {
-          const data = await res.json();
-          const latency = Math.round((Date.now() - start) / 2);
-          const serverTime = data.timestamp + latency;
-          setServerOffsetMs(serverTime - Date.now());
-        }
+        const data = await fetchJson<{ timestamp: number }>('/api/time');
+        const latency = Math.round((Date.now() - start) / 2);
+        const serverTime = data.timestamp + latency;
+        setServerOffsetMs(serverTime - Date.now());
       } catch (err) {
         console.warn('Could not sync with server time, using local clock', err);
       }
