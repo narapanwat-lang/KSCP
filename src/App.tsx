@@ -71,6 +71,7 @@ export default function App() {
             <GuardCheckinForm
               onSuccess={handleReportCreated}
               onRefreshReports={() => setRefreshKey((k) => k + 1)}
+              serverOffsetMs={serverOffsetMs}
             />
           </>
         ) : (

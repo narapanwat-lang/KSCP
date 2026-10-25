@@ -357,6 +357,11 @@ export const ReportsTable: React.FC<ReportsTableProps> = ({
                         >
                           <Eye className="w-4 h-4 text-emerald-700" />
                           <span className="hidden sm:inline">ดูรายละเอียด</span>
+                          {r.photo_urls && r.photo_urls.length > 1 && (
+                            <span className="text-[10px] font-bold bg-emerald-200/90 text-emerald-950 px-1.5 py-0.5 rounded-full border border-emerald-300">
+                              {r.photo_urls.length} รูป
+                            </span>
+                          )}
                         </button>
                       </td>
                     </tr>

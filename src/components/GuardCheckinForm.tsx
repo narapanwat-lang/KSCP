@@ -12,6 +12,11 @@ import {
   Info,
   Check,
   Navigation,
+  Plus,
+  Trash2,
+  Eye,
+  Images,
+  X,
 } from 'lucide-react';
 import { Employee, Checkpoint, SituationType, Report } from '../types.ts';
 import { CameraModal } from './CameraModal.tsx';
@@ -20,11 +25,13 @@ import { fetchJson } from '../services/apiClient.ts';
 interface GuardCheckinFormProps {
   onSuccess: (report: Report) => void;
   onRefreshReports: () => void;
+  serverOffsetMs?: number;
 }
 
 export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
   onSuccess,
   onRefreshReports,
+  serverOffsetMs = 0,
 }) => {
   // Employee State
   const [employeeInput, setEmployeeInput] = useState('');
@@ -36,11 +43,12 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
   const [situation, setSituation] = useState<SituationType | null>(null);
   const [incidentDescription, setIncidentDescription] = useState('');
 
-  // Photo State
-  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
+  // Multi-Photo State
+  const [photosBase64, setPhotosBase64] = useState<string[]>([]);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
 
-  // GPS & Checkpoint State
+  // GPS State
   const [gpsLocation, setGpsLocation] = useState<{
     lat: number;
     lng: number;
@@ -48,8 +56,6 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
   } | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [isGettingGps, setIsGettingGps] = useState(false);
-  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
-  const [selectedCheckpointId, setSelectedCheckpointId] = useState<string>('');
   const [gpsRequired, setGpsRequired] = useState(false);
 
   // Submission State
@@ -59,11 +65,10 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
 
   const dropdownRef = useRef<HTMLDivElement | null>(null);
 
-  // Load Employees and Checkpoints from backend
+  // Load Employees and settings from backend
   useEffect(() => {
     fetchEmployees();
-    fetchCheckpoints();
-    // Load last used employee name from localStorage for user convenience
+    fetchSystemConfig();
     const lastEmployee = localStorage.getItem('kscp_last_employee');
     if (lastEmployee) {
       setEmployeeInput(lastEmployee);
@@ -102,16 +107,12 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
     }
   };
 
-  const fetchCheckpoints = async () => {
+  const fetchSystemConfig = async () => {
     try {
       const data = await fetchJson<{ checkpoints: Checkpoint[]; gpsRequired: boolean }>('/api/checkpoints');
-      setCheckpoints(data.checkpoints || []);
       setGpsRequired(Boolean(data.gpsRequired));
-      if (data.checkpoints && data.checkpoints.length > 0) {
-        setSelectedCheckpointId(data.checkpoints[0].id);
-      }
     } catch (e) {
-      console.warn('Could not load checkpoints', e);
+      console.warn('Could not load config', e);
     }
   };
 
@@ -154,6 +155,11 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
     );
   };
 
+  const handleDeletePhoto = (indexToDelete: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPhotosBase64((prev) => prev.filter((_, idx) => idx !== indexToDelete));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
@@ -165,9 +171,9 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
       return;
     }
 
-    // 2. Validation: Photo
-    if (!photoBase64) {
-      setErrorMessage('กรุณาถ่ายรูปหรือแนบรูปรายงานตัว');
+    // 2. Validation: Photos (At least 1 photo required, supports multiple)
+    if (photosBase64.length === 0) {
+      setErrorMessage('กรุณาถ่ายรูปรายงานตัวอย่างน้อย 1 รูป (สามารถถ่ายได้มากกว่า 1 รูป)');
       return;
     }
 
@@ -199,11 +205,12 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
         employee_name: cleanName,
         situation,
         incident_description: situation !== 'normal' ? incidentDescription.trim() : '',
-        photo_base64: photoBase64,
+        photos_base64: photosBase64,
+        photo_base64: photosBase64[0],
         latitude: gpsLocation?.lat ?? null,
         longitude: gpsLocation?.lng ?? null,
         gps_accuracy_m: gpsLocation?.accuracy ?? null,
-        checkpoint_id: selectedCheckpointId || null,
+        checkpoint_id: null,
       };
 
       const data = await fetchJson<{ success: boolean; report: Report }>('/api/reports', {
@@ -219,10 +226,10 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
       setSuccessReport(data.report);
       onSuccess(data.report);
       onRefreshReports();
-      fetchEmployees(); // update employee list
+      fetchEmployees();
 
-      // Reset form fields except employee name
-      setPhotoBase64(null);
+      // Reset photos and fields
+      setPhotosBase64([]);
       setSituation(null);
       setIncidentDescription('');
     } catch (err: any) {
@@ -251,10 +258,15 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-emerald-800 mt-1">
-                บันทึกข้อมูลลงฐานข้อมูลระบบเรียบร้อยแล้ว พนักงาน:{' '}
+                บันทึกข้อมูลและรูปถ่ายประทับตราลงฐานข้อมูลเรียบร้อยแล้ว พนักงาน:{' '}
                 <strong className="font-semibold text-emerald-950">
                   {successReport.employee_name_snapshot}
                 </strong>
+                {successReport.photo_urls && successReport.photo_urls.length > 1 && (
+                  <span className="ml-1 font-semibold text-emerald-900">
+                    (แนบรูปถ่ายทั้งหมด {successReport.photo_urls.length} รูป)
+                  </span>
+                )}
               </p>
               <div className="mt-2 text-xs text-emerald-900 bg-white/80 p-2.5 rounded-xl border border-emerald-200 grid grid-cols-2 gap-2">
                 <div>
@@ -288,7 +300,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
               </div>
               <button
                 onClick={() => setSuccessReport(null)}
-                className="mt-3 text-xs font-semibold text-emerald-700 hover:text-emerald-900 underline"
+                className="mt-3 text-xs font-semibold text-emerald-700 hover:text-emerald-900 underline cursor-pointer"
               >
                 ปิดข้อความแจ้งเตือนนี้
               </button>
@@ -307,7 +319,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
           </div>
         )}
 
-        {/* 1. Employee Name Input (Google Forms Style) */}
+        {/* 1. Employee Name Input */}
         <div className="space-y-1.5" ref={dropdownRef}>
           <div className="flex items-center justify-between">
             <label className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
@@ -340,7 +352,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
                   setEmployeeInput('');
                   setShowDropdown(true);
                 }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs px-1.5 py-0.5 rounded"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs px-1.5 py-0.5 rounded cursor-pointer"
               >
                 ล้าง
               </button>
@@ -360,7 +372,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
                       setEmployeeInput(emp.full_name);
                       setShowDropdown(false);
                     }}
-                    className="w-full text-left px-3.5 py-2.5 text-xs sm:text-sm text-slate-800 hover:bg-emerald-50 hover:text-emerald-900 transition-colors flex items-center justify-between"
+                    className="w-full text-left px-3.5 py-2.5 text-xs sm:text-sm text-slate-800 hover:bg-emerald-50 hover:text-emerald-900 transition-colors flex items-center justify-between cursor-pointer"
                   >
                     <span className="font-medium">{emp.full_name}</span>
                     <span className="text-[11px] text-slate-400">เลือก</span>
@@ -373,98 +385,138 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
           <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-1">
             <Info className="w-3 h-3 text-slate-400 shrink-0" />
             <span>
-              เมื่อบันทึกชื่อแล้วจะจัดเก็บในระบบเพื่อเลือกใช้ซ้ำได้อัตโนมัติ (ระบบบันทึกชื่อตามที่ระบุ)
+              เมื่อบันทึกชื่อแล้วจะจัดเก็บในระบบเพื่อเลือกใช้ซ้ำได้อัตโนมัติ
             </span>
           </p>
         </div>
 
-        {/* 2. Photo Attachment / Camera Button */}
+        {/* 2. Photo Attachment / Multi-Photo Camera */}
         <div className="space-y-2">
-          <label className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
-            <Camera className="w-4 h-4 text-emerald-800" />
-            <span>ถ่ายรูป / แนบรูปรายงานตัว</span>
-            <span className="text-red-500">*</span>
-          </label>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+              <Camera className="w-4 h-4 text-emerald-800" />
+              <span>ถ่ายรูปรายงานตัว (ถ่ายได้มากกว่า 1 รูป)</span>
+              <span className="text-red-500">*</span>
+            </label>
+            <span className="text-[11px] text-emerald-700 font-medium bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+              ประทับตราเวลาไทย, GPS & โลโก้
+            </span>
+          </div>
 
-          {photoBase64 ? (
-            <div className="relative rounded-2xl overflow-hidden border-2 border-emerald-500 bg-slate-950 p-1 flex items-center justify-center max-h-80">
-              <img
-                src={photoBase64}
-                alt="ภาพถ่ายรายงานตัว"
-                className="max-h-72 w-auto max-w-full rounded-xl object-contain"
-              />
-              <div className="absolute top-3 right-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsCameraOpen(true)}
-                  className="px-3 py-1.5 rounded-lg bg-black/70 hover:bg-black/90 text-white text-xs font-medium flex items-center gap-1.5 backdrop-blur-sm border border-white/20 transition-colors"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>ถ่ายใหม่</span>
-                </button>
+          {photosBase64.length > 0 ? (
+            <div className="space-y-3 bg-slate-50 rounded-2xl p-3 sm:p-4 border border-slate-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Images className="w-4 h-4 text-emerald-700" />
+                  <span className="text-xs sm:text-sm font-bold text-slate-800">
+                    รูปถ่ายที่แนบแล้ว ({photosBase64.length} รูป)
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsCameraOpen(true)}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>ถ่ายรูปเพิ่ม</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPhotosBase64([])}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-200 hover:bg-red-50 hover:text-red-700 text-slate-600 text-xs font-medium transition-colors cursor-pointer"
+                    title="ล้างรูปทั้งหมด"
+                  >
+                    ล้างทั้งหมด
+                  </button>
+                </div>
               </div>
-              <div className="absolute bottom-3 left-3 bg-emerald-950/90 text-emerald-300 text-xs px-2.5 py-1 rounded-md border border-emerald-500/40 backdrop-blur-sm">
-                รูปภาพพร้อมส่งรายงาน
+
+              {/* Gallery Grid of Photos */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 sm:gap-3">
+                {photosBase64.map((photo, idx) => (
+                  <div
+                    key={idx}
+                    className="relative group rounded-xl overflow-hidden bg-slate-950 border border-slate-300 shadow-sm aspect-4/3 flex items-center justify-center cursor-pointer"
+                    onClick={() => setPreviewPhoto(photo)}
+                  >
+                    <img
+                      src={photo}
+                      alt={`ภาพที่ ${idx + 1}`}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                    />
+                    
+                    {/* Top index badge */}
+                    <div className="absolute top-2 left-2 bg-black/75 backdrop-blur-xs text-white text-[10px] font-bold px-2 py-0.5 rounded-md border border-white/20">
+                      รูปที่ {idx + 1}
+                    </div>
+
+                    {/* View Icon on hover */}
+                    <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                      <span className="bg-white/90 text-slate-900 p-1.5 rounded-full shadow">
+                        <Eye className="w-4 h-4" />
+                      </span>
+                    </div>
+
+                    {/* Delete button */}
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeletePhoto(idx, e)}
+                      className="absolute top-2 right-2 p-1.5 rounded-full bg-red-600/90 hover:bg-red-600 text-white shadow-md transition-colors cursor-pointer z-10"
+                      title="ลบรูปนี้"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="text-[11px] text-emerald-800 bg-emerald-100/70 py-2 px-3 rounded-xl border border-emerald-300 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  รูปภาพทุกรูปได้รับการประทับตราวัน-เวลาไทย, พิกัด GPS, และโลโก้กนกสุวรรณเรียบร้อยแล้ว
+                </span>
               </div>
             </div>
           ) : (
+            /* Big Photo Button when empty */
             <button
               type="button"
               onClick={() => setIsCameraOpen(true)}
-              className="w-full py-6 px-4 rounded-2xl border-2 border-dashed border-emerald-700/40 bg-emerald-50/40 hover:bg-emerald-50 hover:border-emerald-700 text-emerald-900 flex flex-col items-center justify-center gap-2 transition-all group"
+              className="w-full py-6 px-4 rounded-2xl border-2 border-dashed border-emerald-700/50 bg-emerald-50/50 hover:bg-emerald-50/90 hover:border-emerald-700 text-emerald-950 flex flex-col items-center justify-center gap-2.5 transition-all group shadow-2xs cursor-pointer"
             >
-              <div className="w-13 h-13 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center group-hover:scale-105 transition-transform shadow-sm">
-                <Camera className="w-6 h-6" />
+              <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center group-hover:scale-105 transition-transform shadow-sm">
+                <Camera className="w-7 h-7" />
               </div>
               <div className="text-center">
                 <span className="text-sm sm:text-base font-bold text-emerald-950 block">
-                  กดถ่ายรูป / แนบรูปภาพรายงานตัว
+                  กดถ่ายรูปรายงานตัว (ถ่ายได้มากกว่า 1 รูป)
                 </span>
-                <span className="text-xs text-slate-500 mt-0.5 block">
-                  รองรับทั้งกล้องหน้า-หลัง และเลือกรูปจากอุปกรณ์
+                <span className="text-xs text-slate-600 mt-1 block">
+                  ระบบจะประทับตรา <strong>วัน-เวลาประเทศไทย, พิกัด GPS, และโลโก้กนกสุวรรณ</strong> ลงในรูปภาพอัตโนมัติ
                 </span>
               </div>
             </button>
           )}
         </div>
 
-        {/* 3. Checkpoint & GPS Location Verification */}
+        {/* 3. GPS Location Verification (No Checkpoint Required) */}
         <div className="space-y-2 bg-slate-50 rounded-2xl p-3.5 sm:p-4 border border-slate-200">
           <div className="flex items-center justify-between">
             <span className="text-xs sm:text-sm font-semibold text-slate-900 flex items-center gap-1.5">
               <MapPin className="w-4 h-4 text-emerald-800" />
-              <span>จุดตรวจและพิกัดสถานที่จริง</span>
+              <span>พิกัดสถานที่จริง (GPS)</span>
             </span>
             <button
               type="button"
               onClick={requestGpsLocation}
               disabled={isGettingGps}
-              className="text-xs text-emerald-800 hover:text-emerald-950 font-medium flex items-center gap-1 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs hover:border-emerald-300 transition-colors"
+              className="text-xs text-emerald-800 hover:text-emerald-950 font-medium flex items-center gap-1 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs hover:border-emerald-300 transition-colors cursor-pointer"
             >
               <Navigation className={`w-3.5 h-3.5 ${isGettingGps ? 'animate-spin' : ''}`} />
               <span>{isGettingGps ? 'กำลังดึงพิกัด...' : 'ระบุพิกัด GPS'}</span>
             </button>
           </div>
-
-          {/* Checkpoint selector if checkpoints exist */}
-          {checkpoints.length > 0 && (
-            <div>
-              <label className="text-[11px] font-medium text-slate-600 block mb-1">
-                เลือกจุดตรวจที่กำลังปฏิบัติหน้าที่:
-              </label>
-              <select
-                value={selectedCheckpointId}
-                onChange={(e) => setSelectedCheckpointId(e.target.value)}
-                className="w-full px-3 py-2 text-xs sm:text-sm rounded-xl border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
-              >
-                {checkpoints.map((cp) => (
-                  <option key={cp.id} value={cp.id}>
-                    {cp.name} (รัศมี {cp.allowed_radius_m} ม.)
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
 
           {/* GPS Status feedback */}
           {gpsLocation ? (
@@ -487,12 +539,12 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
             <div className="text-[11px] text-slate-500">
               {gpsRequired
                 ? '⚠️ ระบบตั้งค่าให้ต้องยืนยันพิกัด GPS โปรดกดปุ่ม "ระบุพิกัด GPS" เพื่อความถูกต้อง'
-                : 'สามารถกดปุ่ม "ระบุพิกัด GPS" เพื่อแนบตำแหน่งจริงยืนยันในรายงานได้'}
+                : 'สามารถกดปุ่ม "ระบุพิกัด GPS" เพื่อบันทึกตำแหน่งจริงลงในระบบและตราประทับ'}
             </div>
           )}
         </div>
 
-        {/* 4. Situation Selection (3 Large Mutually Exclusive Options) */}
+        {/* 4. Situation Selection */}
         <div className="space-y-2">
           <label className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-800" />
@@ -505,7 +557,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
             <button
               type="button"
               onClick={() => setSituation('normal')}
-              className={`py-3 sm:py-3.5 px-2 rounded-xl border-2 font-medium text-xs sm:text-sm flex flex-col items-center justify-center gap-1.5 transition-all ${
+              className={`py-3 sm:py-3.5 px-2 rounded-xl border-2 font-medium text-xs sm:text-sm flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 situation === 'normal'
                   ? 'bg-emerald-50 border-emerald-600 text-emerald-950 shadow-sm ring-1 ring-emerald-500'
                   : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
@@ -523,7 +575,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
             <button
               type="button"
               onClick={() => setSituation('abnormal')}
-              className={`py-3 sm:py-3.5 px-2 rounded-xl border-2 font-medium text-xs sm:text-sm flex flex-col items-center justify-center gap-1.5 transition-all ${
+              className={`py-3 sm:py-3.5 px-2 rounded-xl border-2 font-medium text-xs sm:text-sm flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 situation === 'abnormal'
                   ? 'bg-amber-50 border-amber-500 text-amber-950 shadow-sm ring-1 ring-amber-500'
                   : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
@@ -541,7 +593,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
             <button
               type="button"
               onClick={() => setSituation('emergency')}
-              className={`py-3 sm:py-3.5 px-2 rounded-xl border-2 font-medium text-xs sm:text-sm flex flex-col items-center justify-center gap-1.5 transition-all ${
+              className={`py-3 sm:py-3.5 px-2 rounded-xl border-2 font-medium text-xs sm:text-sm flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 situation === 'emergency'
                   ? 'bg-red-50 border-red-600 text-red-950 shadow-sm ring-1 ring-red-600'
                   : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
@@ -557,7 +609,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
           </div>
         </div>
 
-        {/* 5. Conditional Incident Description Input */}
+        {/* 5. Conditional Incident Description */}
         {situation === 'abnormal' && (
           <div className="space-y-1.5 animate-in fade-in duration-200">
             <label className="text-sm font-semibold text-amber-900 flex items-center gap-1.5">
@@ -569,7 +621,7 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
               rows={3}
               value={incidentDescription}
               onChange={(e) => setIncidentDescription(e.target.value)}
-              placeholder="โปรดระบุสิ่งที่เกิดขึ้น สถานที่ และรายละเอียดที่จำเป็น"
+              placeholder="โปรดระบุสิ่งที่เกิดขึ้น และรายละเอียดที่จำเป็น"
               className="w-full px-3.5 py-2.5 rounded-xl border border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500 text-xs sm:text-sm text-slate-900 bg-amber-50/30"
               required
             />
@@ -590,14 +642,14 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
               rows={3}
               value={incidentDescription}
               onChange={(e) => setIncidentDescription(e.target.value)}
-              placeholder="โปรดระบุสิ่งที่เกิดขึ้น สถานที่ และรายละเอียดที่จำเป็นโดยละเอียด"
+              placeholder="โปรดระบุสิ่งที่เกิดขึ้น และรายละเอียดที่จำเป็นโดยละเอียด"
               className="w-full px-3.5 py-2.5 rounded-xl border-2 border-red-400 focus:outline-none focus:ring-2 focus:ring-red-600 text-xs sm:text-sm text-slate-900 bg-white"
               required
             />
           </div>
         )}
 
-        {/* 6. Big Submit Button */}
+        {/* 6. Submit Button */}
         <div className="pt-2">
           <button
             type="submit"
@@ -612,7 +664,9 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
             ) : (
               <>
                 <Send className="w-5 h-5 text-amber-400" />
-                <span>บันทึกรายงานตัว</span>
+                <span>
+                  บันทึกรายงานตัว {photosBase64.length > 0 ? `(${photosBase64.length} รูป)` : ''}
+                </span>
               </>
             )}
           </button>
@@ -623,11 +677,51 @@ export const GuardCheckinForm: React.FC<GuardCheckinFormProps> = ({
       <CameraModal
         isOpen={isCameraOpen}
         onClose={() => setIsCameraOpen(false)}
-        onCapture={(photo) => {
-          setPhotoBase64(photo);
+        onSavePhotos={(photos) => {
+          setPhotosBase64(photos);
         }}
-        currentPhoto={photoBase64}
+        currentPhotos={photosBase64}
+        employeeName={employeeInput}
+        locationDetails=""
+        gpsLocation={gpsLocation}
+        onUpdateGpsLocation={(coords) => setGpsLocation(coords)}
+        serverOffsetMs={serverOffsetMs}
+        situation={situation}
       />
+
+      {/* Lightbox Preview Modal for Attached Photo */}
+      {previewPhoto && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/90 backdrop-blur-md animate-in fade-in"
+          onClick={() => setPreviewPhoto(null)}
+        >
+          <div
+            className="relative max-w-2xl w-full bg-slate-950 rounded-2xl overflow-hidden border border-slate-700 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-3 bg-slate-900 border-b border-slate-800 text-white">
+              <span className="text-xs font-semibold flex items-center gap-1.5 text-amber-300">
+                <CheckCircle className="w-4 h-4 text-emerald-400" />
+                <span>ภาพถ่ายรายงานตัวที่ประทับตราแล้ว</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setPreviewPhoto(null)}
+                className="p-1 rounded-full text-slate-400 hover:text-white hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-2 flex items-center justify-center bg-black">
+              <img
+                src={previewPhoto}
+                alt="รูปตัวอย่างขนาดเต็ม"
+                className="max-h-[75vh] w-auto max-w-full rounded-lg object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

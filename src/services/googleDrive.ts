@@ -169,14 +169,10 @@ export const uploadPhotoToGoogleDrive = async (
     ? { id: folderId }
     : await getOrCreateTargetFolder(TARGET_FOLDER_NAME);
 
-  // 1. Fetch image data as blob
-  const imageRes = await fetch(report.photo_url);
-  if (!imageRes.ok) {
-    throw new Error(`ไม่สามารถโหลดรูปถ่ายจากระบบได้ (${report.photo_url})`);
-  }
-  const imageBlob = await imageRes.blob();
+  const photosToUpload = report.photo_urls && report.photo_urls.length > 0
+    ? report.photo_urls
+    : [report.photo_url];
 
-  // 2. Format descriptive filename
   const cleanDate = report.report_date_th.replace(/\//g, '-');
   const cleanTime = report.report_time_th.replace(/:/g, '-');
   const situationThai =
@@ -186,77 +182,89 @@ export const uploadPhotoToGoogleDrive = async (
       ? 'ไม่ปกติ'
       : 'ฉุกเฉิน';
 
-  const fileName = `[${cleanDate}_${cleanTime}] ${report.employee_name_snapshot} - ${situationThai}.jpg`;
-
-  // 3. Prepare metadata and multipart body
-  const metadata = {
-    name: fileName,
-    parents: [targetFolder.id],
-    description: `รปภ.: ${report.employee_name_snapshot} | วันที่: ${report.report_date_th} เวลา: ${report.report_time_th} น. | สถานการณ์: ${situationThai}${
-      report.incident_description ? ` (${report.incident_description})` : ''
-    } | จุดตรวจ: ${report.checkpoint_name || 'ทั่วไป'} | รหัสอ้างอิง: ${report.id}`,
+  let primaryUploadedFile: { fileId: string; webViewLink?: string } = {
+    fileId: '',
+    webViewLink: undefined,
   };
 
-  const boundary = '-------314159265358979323846';
-  const delimiter = `\r\n--${boundary}\r\n`;
-  const closeDelimiter = `\r\n--${boundary}--`;
-
-  const metadataBlob = new Blob([JSON.stringify(metadata)], {
-    type: 'application/json; charset=UTF-8',
-  });
-
-  const multipartBody = new Blob(
-    [
-      delimiter,
-      'Content-Type: application/json; charset=UTF-8\r\n\r\n',
-      metadataBlob,
-      delimiter,
-      'Content-Type: image/jpeg\r\n\r\n',
-      imageBlob,
-      closeDelimiter,
-    ],
-    { type: `multipart/related; boundary=${boundary}` }
-  );
-
-  // 4. Send upload request to Google Drive API
-  const uploadRes = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
-      },
-      body: multipartBody,
+  for (let i = 0; i < photosToUpload.length; i++) {
+    const photoUrl = photosToUpload[i];
+    const imageRes = await fetch(photoUrl);
+    if (!imageRes.ok) {
+      continue;
     }
-  );
+    const imageBlob = await imageRes.blob();
 
-  if (!uploadRes.ok) {
-    const errText = await uploadRes.text();
-    throw new Error(`อัปโหลดรูปไปยัง Google Drive ล้มเหลว (${uploadRes.status}): ${errText}`);
+    const suffix = photosToUpload.length > 1 ? `_${i + 1}` : '';
+    const fileName = `[${cleanDate}_${cleanTime}] ${report.employee_name_snapshot} - ${situationThai}${suffix}.jpg`;
+
+    const metadata = {
+      name: fileName,
+      parents: [targetFolder.id],
+      description: `รปภ.: ${report.employee_name_snapshot} | วันที่: ${report.report_date_th} เวลา: ${report.report_time_th} น. | สถานการณ์: ${situationThai}${
+        report.incident_description ? ` (${report.incident_description})` : ''
+      } | รูปที่ ${i + 1}/${photosToUpload.length} | รหัสอ้างอิง: ${report.id}`,
+    };
+
+    const boundary = '-------314159265358979323846';
+    const delimiter = `\r\n--${boundary}\r\n`;
+    const closeDelimiter = `\r\n--${boundary}--`;
+
+    const metadataBlob = new Blob([JSON.stringify(metadata)], {
+      type: 'application/json; charset=UTF-8',
+    });
+
+    const multipartBody = new Blob(
+      [
+        delimiter,
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+        metadataBlob,
+        delimiter,
+        'Content-Type: image/jpeg\r\n\r\n',
+        imageBlob,
+        closeDelimiter,
+      ],
+      { type: `multipart/related; boundary=${boundary}` }
+    );
+
+    const uploadRes = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+        },
+        body: multipartBody,
+      }
+    );
+
+    if (uploadRes.ok) {
+      const data = await uploadRes.json();
+      if (i === 0) {
+        primaryUploadedFile = { fileId: data.id, webViewLink: data.webViewLink };
+      }
+    }
   }
-
-  const uploadedFile = await uploadRes.json();
 
   // 5. Update report on backend with Drive metadata
-  try {
-    await fetch(`/api/reports/${report.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        drive_file_id: uploadedFile.id,
-        drive_web_view_link: uploadedFile.webViewLink,
-        drive_synced_at: new Date().toISOString(),
-      }),
-    });
-  } catch (err) {
-    console.warn('Failed to persist drive sync metadata to backend', err);
+  if (primaryUploadedFile.fileId) {
+    try {
+      await fetch(`/api/reports/${report.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          drive_file_id: primaryUploadedFile.fileId,
+          drive_web_view_link: primaryUploadedFile.webViewLink,
+          drive_synced_at: new Date().toISOString(),
+        }),
+      });
+    } catch (err) {
+      console.warn('Failed to persist drive sync metadata to backend', err);
+    }
   }
 
-  return {
-    fileId: uploadedFile.id,
-    webViewLink: uploadedFile.webViewLink,
-  };
+  return primaryUploadedFile;
 };
 
 /**

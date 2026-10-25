@@ -34,6 +34,8 @@ export interface Report {
   incident_description?: string;
   photo_url: string;
   photo_id: string;
+  photos?: Array<{ id: string; url: string }>;
+  photo_urls?: string[];
   latitude?: number | null;
   longitude?: number | null;
   gps_accuracy_m?: number | null;

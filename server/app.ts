@@ -312,38 +312,64 @@ api.post('/reports', async (req: Request, res: Response) => {
       }
     }
 
-    // 4. Validate Photo
-    if (!photo_base64 || typeof photo_base64 !== 'string') {
+    // 4. Validate and Process Photos (supports 1 or more photos)
+    const rawPhotos: string[] = [];
+    if (Array.isArray(req.body.photos_base64) && req.body.photos_base64.length > 0) {
+      for (const p of req.body.photos_base64) {
+        if (typeof p === 'string' && p.trim()) rawPhotos.push(p);
+      }
+    } else if (typeof req.body.photo_base64 === 'string' && req.body.photo_base64.trim()) {
+      rawPhotos.push(req.body.photo_base64);
+    }
+
+    if (rawPhotos.length === 0) {
       return res.status(400).json({ error: 'กรุณาถ่ายรูปหรือแนบรูปรายงานตัวก่อนบันทึก' });
     }
 
-    // Save Photo File and Cache
+    // Save Photo Files and Cache
     const reportId = `rep_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-    const photoId = `photo_${reportId}.jpg`;
-    const photoPath = path.join(PHOTOS_DIR, photoId);
+    const savedPhotos: Array<{ id: string; url: string }> = [];
 
     try {
-      const base64Data = photo_base64.replace(/^data:image\/\w+;base64,/, '');
-      const buffer = Buffer.from(base64Data, 'base64');
-
-      // Keep in memory cache
-      cachePhotoBuffer(photoId, buffer, 'image/jpeg');
-
-      // Also write to filesystem if possible
-      try {
-        if (!fs.existsSync(PHOTOS_DIR)) {
+      if (!fs.existsSync(PHOTOS_DIR)) {
+        try {
           fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+        } catch (dirErr) {
+          console.warn('Could not ensure PHOTOS_DIR exists:', dirErr);
         }
-        fs.writeFileSync(photoPath, buffer);
-      } catch (writeErr) {
-        console.warn('Could not write photo to disk (memory cache active):', writeErr);
+      }
+
+      for (let i = 0; i < rawPhotos.length; i++) {
+        const photoB64 = rawPhotos[i];
+        const photoId = rawPhotos.length === 1 ? `photo_${reportId}.jpg` : `photo_${reportId}_${i + 1}.jpg`;
+        const photoPath = path.join(PHOTOS_DIR, photoId);
+
+        const base64Data = photoB64.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+
+        // Keep in memory cache
+        cachePhotoBuffer(photoId, buffer, 'image/jpeg');
+
+        // Write to filesystem if possible
+        try {
+          fs.writeFileSync(photoPath, buffer);
+        } catch (writeErr) {
+          console.warn(`Could not write photo ${photoId} to disk (memory cache active):`, writeErr);
+        }
+
+        savedPhotos.push({
+          id: photoId,
+          url: `/api/photos/${photoId}`,
+        });
       }
     } catch (err) {
-      console.error('Failed to process photo buffer', err);
+      console.error('Failed to process photos buffer', err);
       return res.status(500).json({ error: 'ไม่สามารถจัดเก็บรูปภาพได้ กรุณาลองใหม่อีกครั้ง' });
     }
 
-    const photoUrl = `/api/photos/${photoId}`;
+    const primaryPhoto = savedPhotos[0];
+    const photoUrl = primaryPhoto.url;
+    const photoId = primaryPhoto.id;
 
     // 5. Authoritative Server Time
     const now = new Date();
@@ -405,6 +431,8 @@ api.post('/reports', async (req: Request, res: Response) => {
       incident_description: situation !== 'normal' ? incident_description.trim() : undefined,
       photo_url: photoUrl,
       photo_id: photoId,
+      photos: savedPhotos,
+      photo_urls: savedPhotos.map((p) => p.url),
       latitude: lat,
       longitude: lng,
       gps_accuracy_m: accuracy,
